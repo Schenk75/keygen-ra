@@ -38,9 +38,13 @@ extern crate httparse;
 extern crate yasna;
 extern crate bit_vec;
 extern crate num_bigint;
-extern crate serde_json;
 extern crate chrono;
 extern crate webpki_roots;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_cbor;
+extern crate serde;
+extern crate serde_json;
 
 use std::backtrace::{self, PrintFormat};
 use sgx_types::*;
@@ -52,7 +56,7 @@ use sgx_rand::*;
 use std::prelude::v1::*;
 use std::sync::Arc;
 use std::net::TcpStream;
-use std::string::String;
+use std::string::{String, ToString};
 use std::ptr;
 use std::str;
 use std::io::{self, Write, Read};
@@ -67,6 +71,9 @@ pub const DEV_HOSTNAME:&'static str = "api.trustedservices.intel.com";
 pub const SIGRL_SUFFIX:&'static str = "/sgx/dev/attestation/v3/sigrl/";
 pub const REPORT_SUFFIX:&'static str = "/sgx/dev/attestation/v3/report";
 pub const CERTEXPIRYDAYS: i64 = 90i64;
+
+const SGX_ECP256_KEY_SIZE: size_t = 32;
+const LOG_SIZE: size_t = 1024;
 
 extern "C" {
     pub fn ocall_sgx_init_quote ( ret_val : *mut sgx_status_t,
@@ -85,6 +92,10 @@ extern "C" {
                 p_quote            : *mut u8,
                 maxlen             : u32,
                 p_quote_len        : *mut u32) -> sgx_status_t;
+    pub fn ocall_store_file (ret_val: *mut sgx_status_t, sealed_log: &[u8; LOG_SIZE],
+        file_name: *const u8, name_len: usize) -> sgx_status_t;
+    pub fn ocall_load_file (ret_val: *mut sgx_status_t, sealed_log: &mut [u8; LOG_SIZE],
+        file_name: *const u8, name_len: usize) -> sgx_status_t;
 }
 
 
@@ -510,7 +521,7 @@ struct ClientAuth {
 
 impl ClientAuth {
     fn new(outdated_ok: bool) -> ClientAuth {
-        ClientAuth{ outdated_ok : outdated_ok }
+        ClientAuth{ outdated_ok }
     }
 }
 
@@ -521,7 +532,7 @@ impl rustls::ClientCertVerifier for ClientAuth {
 
     fn verify_client_cert(&self, _certs: &[rustls::Certificate], _sni: Option<&webpki::DNSName>)
     -> Result<rustls::ClientCertVerified, rustls::TLSError> {
-        println!("client cert: {:?}", _certs);
+            println!("client cert: {:?}", _certs);
             // This call will automatically verify cert is properly signed
             match cert::verify_mra_cert(&_certs[0].0) {
                 Ok(()) => {
@@ -548,7 +559,7 @@ struct ServerAuth {
 
 impl ServerAuth {
     fn new(outdated_ok: bool) -> ServerAuth {
-        ServerAuth{ outdated_ok : outdated_ok }
+        ServerAuth{ outdated_ok }
     }
 }
 
@@ -558,7 +569,7 @@ impl rustls::ServerCertVerifier for ServerAuth {
               _certs: &[rustls::Certificate],
               _hostname: webpki::DNSNameRef,
               _ocsp: &[u8]) -> Result<rustls::ServerCertVerified, rustls::TLSError> {
-    println!("server cert: {:?}", _certs);
+        println!("server cert: {:?}", _certs);
         // This call will automatically verify cert is properly signed
         match cert::verify_mra_cert(&_certs[0].0) {
             Ok(()) => {
@@ -579,8 +590,34 @@ impl rustls::ServerCertVerifier for ServerAuth {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+struct EccPrivateKey {
+    r: [u8; SGX_ECP256_KEY_SIZE]
+}
+
+impl From<sgx_ec256_private_t> for EccPrivateKey {
+    fn from(key: sgx_ec256_private_t) -> Self {
+        EccPrivateKey { r: key.r }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+struct EccPublicKey {
+    gx: [u8; SGX_ECP256_KEY_SIZE],
+    gy: [u8; SGX_ECP256_KEY_SIZE]
+}
+
+impl From<sgx_ec256_public_t> for EccPublicKey {
+    fn from(key: sgx_ec256_public_t) -> Self {
+        EccPublicKey {
+            gx: key.gx,
+            gy: key.gy
+        }
+    }
+}
+
 #[no_mangle]
-pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t) -> sgx_status_t {
+pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t, op: u8) -> sgx_status_t {
     let _ = backtrace::enable_backtrace("enclave.signed.so", PrintFormat::Short);
 
     // Generate Keypair
@@ -588,6 +625,7 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     ecc_handle.open().unwrap();
     let (prv_k, pub_k) = ecc_handle.create_key_pair().unwrap();
 
+    // Generate quote
     let (attn_report, sig, cert) = match create_attestation_report(&pub_k, sign_type) {
         Ok(r) => r,
         Err(e) => {
@@ -598,6 +636,7 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
 
     let payload = attn_report + "|" + &sig + "|" + &cert;
 
+    // Insert quote into cert
     let (key_der, cert_der) = match cert::gen_ecc_cert(payload, &prv_k, &pub_k, &ecc_handle) {
         Ok(r) => r,
         Err(e) => {
@@ -622,18 +661,79 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     let mut sess = rustls::ClientSession::new(&Arc::new(cfg), dns_name);
     let mut conn = TcpStream::new(socket_fd).unwrap();
 
+    // Connect to Server
     let mut tls = rustls::Stream::new(&mut sess, &mut conn);
-    tls.write("hello".as_bytes()).unwrap();
 
-    let mut plaintext = Vec::new();
-    match tls.read_to_end(&mut plaintext) {
-        Ok(_) => {
-            println!("Server replied: {}", str::from_utf8(&plaintext).unwrap());
-        }
-        Err(ref err) if err.kind() == io::ErrorKind::ConnectionAborted => {
-            println!("EOF (tls)");
-        }
-        Err(e) => println!("Error in read_to_end: {:?}", e),
+    match op {
+        // Store mode
+        0 => {
+            // Get server's public key
+            let mut pub_key_slice = Vec::new();
+            match tls.read_to_end(&mut pub_key_slice) {
+                Ok(_) => {
+                    println!("[+] Get Public Key from Server");
+                }
+                Err(ref err) if err.kind() == io::ErrorKind::ConnectionAborted => {
+                    println!("[-] EOF (tls)");
+                }
+                Err(e) => println!("[-] Error in read_to_end: {:?}", e),
+            }
+            let pub_key_slice = pub_key_slice.as_slice();
+
+            // Store public key
+            let mut pub_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            pub_log[..SGX_ECP256_KEY_SIZE*2].copy_from_slice(pub_key_slice);
+            let file_name = "ecc_pub_key_server".to_string();
+            let mut retval = sgx_status_t::SGX_SUCCESS;
+            let result = unsafe {
+                ocall_store_file(
+                    &mut retval as *mut sgx_status_t,
+                    &pub_log,
+                    file_name.as_ptr() as *const u8,
+                    file_name.len()
+                )
+            };
+            match result {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    println!("[-] Store Public Key (ocall_store_file) Failed {}!", result.as_str());
+                }
+            }
+        },
+        // Load mode
+        1 => {
+            // Load public key
+            let file_name = "ecc_pub_key_server".to_string();
+            let mut ret_val = sgx_status_t::SGX_SUCCESS;
+            let mut log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            let result = unsafe {
+                ocall_load_file(
+                    &mut ret_val as *mut sgx_status_t, 
+                    &mut log,
+                    file_name.as_ptr() as *const u8,
+                    file_name.len())
+            };
+            match result {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    panic!("[-] ocall_load_file Failed {}", result.as_str());
+                }
+            }
+            match ret_val {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    panic!("[-] ocall_load_file Failed {}", result.as_str());
+                }
+            }
+            let mut pub_key_slice: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
+            pub_key_slice.copy_from_slice(&log[..SGX_ECP256_KEY_SIZE*2]);
+            // println!("[.] Public Key from File: {:?}", pub_key_slice);
+
+            // Send public key to server to verify
+            tls.write(&pub_key_slice).unwrap();
+        },
+        // Other mode is invalid
+        _ => { panic!("[-] Invalid Mode!") }
     }
 
     sgx_status_t::SGX_SUCCESS

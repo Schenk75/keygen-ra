@@ -17,18 +17,26 @@ Save them to `bin/spid.txt` and `bin/key.txt` respectively. Size of these two fi
 
 Start server
 
-```
+```bash
 cd server
 make
 cd bin
-./app
+# Generate Ecc key pair and send public key to client (-s can be omitted)
+./app -s
+# or
+# Receive Ecc public key from client and verify it with the sealed private key
+./app -l
 ```
 
 Start client 
 
-```
+```bash
 cd client
 make
 cd bin
-./app
+# Receive Ecc public key from server (-s can be omitted)
+./app -s
+# or
+# Send Ecc public key to server for verification
+./app -l
 ```

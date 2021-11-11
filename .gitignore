@@ -1,8 +1,4 @@
 # Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
 
 # Other files and folders
 .settings/
@@ -27,5 +23,8 @@ Cargo.lock
 */lib/*.a
 libenclave.a
 */bin/app
+*/bin/key.txt
+*/bin/spid.txt
 enclave*.so
 enclave.signed.so
+storage/*

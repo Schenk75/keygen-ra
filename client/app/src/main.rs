@@ -25,7 +25,8 @@ use sgx_urts::SgxEnclave;
 
 use std::os::unix::io::{IntoRawFd, AsRawFd};
 use std::net::{TcpListener, TcpStream, SocketAddr};
-use std::str;
+use std::{str, fs, slice, env};
+use std::io::prelude::*;
 
 const BUFFER_SIZE: usize = 1024;
 
@@ -34,7 +35,7 @@ static ENCLAVE_TOKEN: &'static str = "enclave.token";
 
 extern {
     fn run_client(eid: sgx_enclave_id_t, retval: *mut sgx_status_t,
-        socket_fd: c_int, sign_type: sgx_quote_sign_type_t) -> sgx_status_t;
+        socket_fd: c_int, sign_type: sgx_quote_sign_type_t, op: u8) -> sgx_status_t;
 }
 
 #[no_mangle]
@@ -132,6 +133,37 @@ fn ocall_get_update_info (platform_blob: * const sgx_platform_info_t,
     }
 }
 
+#[no_mangle]
+pub extern "C" fn ocall_store_file (sealed_log: &[u8; BUFFER_SIZE], file_name: *const u8, name_len: usize) -> sgx_status_t {
+    let file_name_slice = unsafe { slice::from_raw_parts(file_name, name_len) };
+    let file_name = std::str::from_utf8(file_name_slice).unwrap();
+
+    println!("Save file name: {}", file_name);
+
+    let mut file = fs::File::create(format!("./storage/{}", file_name)).expect("create file failed");
+    file.write_all(sealed_log).expect("write file failed");
+
+    sgx_status_t::SGX_SUCCESS
+}
+
+#[no_mangle]
+pub extern "C" fn ocall_load_file (sealed_log: &mut [u8; BUFFER_SIZE], file_name: *const u8, name_len: usize) -> sgx_status_t {
+    let file_name_slice = unsafe {slice::from_raw_parts(file_name, name_len)};
+    let file_name = format!("./storage/{}", std::str::from_utf8(file_name_slice).unwrap());
+
+    let mut file = match fs::File::open(file_name){
+        Ok(f) => f,
+        Err(e) => {
+            println!("Cannot open file: {:?}", e);
+            return sgx_status_t::SGX_ERROR_FILE_BAD_STATUS;
+        }
+    };
+    let _ = file.read(sealed_log);
+
+    sgx_status_t::SGX_SUCCESS
+}
+
+
 fn init_enclave() -> SgxResult<SgxEnclave> {
     let mut launch_token: sgx_launch_token_t = [0; 1024];
     let mut launch_token_updated: i32 = 0;
@@ -147,6 +179,19 @@ fn init_enclave() -> SgxResult<SgxEnclave> {
 }
 
 fn main() {
+    let mut args: Vec<_> = env::args().collect();
+    args.remove(0);
+    // In default, operation is store
+    let mut op: u8 = 0;
+    while !args.is_empty() {
+        match args.remove(0).as_ref() {
+            "--load" | "-l" => op = 1,
+            "--store" | "-s" => op = 0,
+            _ => {
+                panic!("Only --load(-l) or --store(-s) is accepted [in default store mode is on]");
+            }
+        }
+    }
     let sign_type = sgx_quote_sign_type_t::SGX_LINKABLE_SIGNATURE;
 
     let enclave = match init_enclave() {
@@ -164,7 +209,7 @@ fn main() {
     let socket = TcpStream::connect("localhost:3443").unwrap();
     let mut retval = sgx_status_t::SGX_SUCCESS;
     let result = unsafe {
-        run_client(enclave.geteid(), &mut retval, socket.as_raw_fd(), sign_type)
+        run_client(enclave.geteid(), &mut retval, socket.as_raw_fd(), sign_type, op)
     };
     match result {
         sgx_status_t::SGX_SUCCESS => {

@@ -28,7 +28,7 @@ enclave {
 
 
     trusted {
-        public sgx_status_t run_server(int fd,sgx_quote_sign_type_t quote_type);
+        public sgx_status_t run_server(int fd, sgx_quote_sign_type_t quote_type, uint8_t op);
     };
 
     untrusted {
@@ -51,5 +51,9 @@ enclave {
 	    sgx_status_t ocall_get_update_info([in] sgx_platform_info_t * platformBlob,
                                             int32_t enclaveTrusted,
                                             [out] sgx_update_info_bit_t * update_info);
+        sgx_status_t ocall_store_file ( [in] uint8_t sealed_log[1024],
+                                        [in, size = name_len] uint8_t* file_name, size_t name_len);
+        sgx_status_t ocall_load_file (  [out] uint8_t sealed_log[1024],
+                                        [in, size = name_len] uint8_t* file_name, size_t name_len);
     };
 };

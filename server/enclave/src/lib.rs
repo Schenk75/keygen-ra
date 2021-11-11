@@ -29,6 +29,7 @@ extern crate sgx_tse;
 #[macro_use]
 extern crate sgx_tstd as std;
 extern crate sgx_rand;
+extern crate sgx_tseal;
 
 extern crate rustls;
 extern crate webpki;
@@ -38,9 +39,13 @@ extern crate httparse;
 extern crate yasna;
 extern crate bit_vec;
 extern crate num_bigint;
-extern crate serde_json;
 extern crate chrono;
 extern crate webpki_roots;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_cbor;
+extern crate serde;
+extern crate serde_json;
 
 use std::backtrace::{self, PrintFormat};
 use sgx_types::*;
@@ -48,11 +53,12 @@ use sgx_tse::*;
 //use sgx_trts::trts::{rsgx_raw_is_outside_enclave, rsgx_lfence};
 use sgx_tcrypto::*;
 use sgx_rand::*;
+use sgx_tseal::SgxSealedData;
 
 use std::prelude::v1::*;
 use std::sync::Arc;
 use std::net::TcpStream;
-use std::string::String;
+use std::string::{String, ToString};
 use std::ptr;
 use std::str;
 use std::io::{Write, Read};
@@ -67,6 +73,9 @@ pub const DEV_HOSTNAME:&'static str = "api.trustedservices.intel.com";
 pub const SIGRL_SUFFIX:&'static str = "/sgx/dev/attestation/v3/sigrl/";
 pub const REPORT_SUFFIX:&'static str = "/sgx/dev/attestation/v3/report";
 pub const CERTEXPIRYDAYS: i64 = 90i64;
+
+const SGX_ECP256_KEY_SIZE: size_t = 32;
+const LOG_SIZE: size_t = 1024;
 
 extern "C" {
     pub fn ocall_sgx_init_quote ( ret_val : *mut sgx_status_t,
@@ -85,6 +94,10 @@ extern "C" {
                 p_quote            : *mut u8,
                 maxlen             : u32,
                 p_quote_len        : *mut u32) -> sgx_status_t;
+    pub fn ocall_store_file (ret_val: *mut sgx_status_t, sealed_log: &[u8; LOG_SIZE],
+        file_name: *const u8, name_len: usize) -> sgx_status_t;
+    pub fn ocall_load_file (ret_val: *mut sgx_status_t, sealed_log: &mut [u8; LOG_SIZE],
+        file_name: *const u8, name_len: usize) -> sgx_status_t;
 }
 
 
@@ -521,7 +534,7 @@ impl rustls::ClientCertVerifier for ClientAuth {
 
     fn verify_client_cert(&self, _certs: &[rustls::Certificate], _sni: Option<&webpki::DNSName>)
     -> Result<rustls::ClientCertVerified, rustls::TLSError> {
-        println!("client cert: {:?}", _certs);
+            println!("client cert: {:?}", _certs);
             // This call will automatically verify cert is properly signed
             match cert::verify_mra_cert(&_certs[0].0) {
                 Ok(()) => {
@@ -558,7 +571,7 @@ impl rustls::ServerCertVerifier for ServerAuth {
               _certs: &[rustls::Certificate],
               _hostname: webpki::DNSNameRef,
               _ocsp: &[u8]) -> Result<rustls::ServerCertVerified, rustls::TLSError> {
-    println!("server cert: {:?}", _certs);
+        println!("server cert: {:?}", _certs);
         // This call will automatically verify cert is properly signed
         match cert::verify_mra_cert(&_certs[0].0) {
             Ok(()) => {
@@ -579,8 +592,34 @@ impl rustls::ServerCertVerifier for ServerAuth {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+struct EccPrivateKey {
+    r: [u8; SGX_ECP256_KEY_SIZE]
+}
+
+impl From<sgx_ec256_private_t> for EccPrivateKey {
+    fn from(key: sgx_ec256_private_t) -> Self {
+        EccPrivateKey { r: key.r }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+struct EccPublicKey {
+    gx: [u8; SGX_ECP256_KEY_SIZE],
+    gy: [u8; SGX_ECP256_KEY_SIZE]
+}
+
+impl From<sgx_ec256_public_t> for EccPublicKey {
+    fn from(key: sgx_ec256_public_t) -> Self {
+        EccPublicKey {
+            gx: key.gx,
+            gy: key.gy
+        }
+    }
+}
+
 #[no_mangle]
-pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t) -> sgx_status_t {
+pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t, op: u8) -> sgx_status_t {
     let _ = backtrace::enable_backtrace("enclave.signed.so", PrintFormat::Short);
 
     // Generate Keypair
@@ -588,6 +627,7 @@ pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     let _result = ecc_handle.open();
     let (prv_k, pub_k) = ecc_handle.create_key_pair().unwrap();
 
+    // Generate quote
     let (attn_report, sig, cert) = match create_attestation_report(&pub_k, sign_type) {
         Ok(r) => r,
         Err(e) => {
@@ -597,6 +637,7 @@ pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     };
 
     let payload = attn_report + "|" + &sig + "|" + &cert;
+    // Insert quote into cert
     let (key_der, cert_der) = match cert::gen_ecc_cert(payload, &prv_k, &pub_k, &ecc_handle) {
         Ok(r) => r,
         Err(e) => {
@@ -605,7 +646,6 @@ pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
         }
     };
     let _result = ecc_handle.close();
-
 
     let mut cfg = rustls::ServerConfig::new(Arc::new(ClientAuth::new(true)));
     let mut certs = Vec::new();
@@ -617,17 +657,222 @@ pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     let mut sess = rustls::ServerSession::new(&Arc::new(cfg));
     let mut conn = TcpStream::new(socket_fd).unwrap();
 
+    // Connect to Client
     let mut tls = rustls::Stream::new(&mut sess, &mut conn);
-    let mut plaintext = [0u8;1024]; //Vec::new();
-    match tls.read(&mut plaintext) {
-        Ok(_) => println!("Client said: {}", str::from_utf8(&plaintext).unwrap()),
-        Err(e) => {
-            println!("Error in read_to_end: {:?}", e);
-            panic!("");
-        }
-    };
 
-    tls.write("hello back".as_bytes()).unwrap();
+    match op {
+        // Store mode
+        0 => {
+            println!("[+] Generate and Store Ecc Key Pair.");
+            // Generate key pair
+            let ecc_handle = SgxEccHandle::new();
+            ecc_handle.open().unwrap();
+            let (prv_k, pub_k) = ecc_handle.create_key_pair().unwrap();
+
+
+            // Store key pair (Seal)
+            let priv_key: EccPrivateKey = prv_k.into();
+            let pub_key: EccPublicKey = pub_k.into();
+            // println!("[.] private key: {:?}\n[.] public key: {:?}", priv_key, pub_key);
+            ecc_handle.close();
+
+            // Store public key
+            let mut pub_encoded: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
+            pub_encoded[..SGX_ECP256_KEY_SIZE].copy_from_slice(&pub_key.gx);
+            pub_encoded[SGX_ECP256_KEY_SIZE..].copy_from_slice(&pub_key.gy);
+            // println!("[.] pub_encoded: {:?}", pub_encoded);
+            let mut pub_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            pub_log[..SGX_ECP256_KEY_SIZE*2].copy_from_slice(&pub_encoded);
+            let file_name = "ecc_pub_key_server".to_string();
+            let mut retval = sgx_status_t::SGX_SUCCESS;
+            let result = unsafe {
+                ocall_store_file(
+                    &mut retval as *mut sgx_status_t,
+                    &pub_log,
+                    file_name.as_ptr() as *const u8,
+                    file_name.len()
+                )
+            };
+            match result {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    println!("[-] Store Public Key (ocall_store_file) Failed {}!", result.as_str());
+                }
+            }
+
+            // We only need to seal private key
+            let priv_encoded = serde_cbor::to_vec(&priv_key).unwrap();
+            let priv_encoded = priv_encoded.as_slice();
+            // println!("[.] priv_encoded: {:?}", priv_encoded);
+            let aad: [u8; 0] = [0_u8; 0];
+            let result = SgxSealedData::<[u8]>::seal_data(&aad, priv_encoded);
+            let sealed_priv = match result {
+                Ok(x) => x,
+                Err(ret) => {
+                    println!("[-] Err seal data!");
+                    return ret; 
+                },
+            };
+            let sealed_priv_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            let sealed_priv_log_size = sealed_priv_log.len() as u32;
+            let opt = unsafe {
+                sealed_priv.to_raw_sealed_data_t(sealed_priv_log.as_ptr() as *mut sgx_sealed_data_t, sealed_priv_log_size)
+            };
+            if opt.is_none() {
+                return sgx_status_t::SGX_ERROR_INVALID_PARAMETER;
+            }
+            // println!("[.] sealed data: {:?}", sealed_priv_log);
+            // Store sealed data to file
+            let file_name = "ecc_priv_key_server_sealed".to_string();
+            let mut retval = sgx_status_t::SGX_SUCCESS;
+            let result = unsafe {
+                ocall_store_file(
+                    &mut retval as *mut sgx_status_t,
+                    &sealed_priv_log,
+                    file_name.as_ptr() as *const u8,
+                    file_name.len())
+            };
+            match result {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    println!("[-] Store Private Key (ocall_store_file) Failed {}!", result.as_str());
+                }
+            }
+
+            // Communicate with client, send public key
+            tls.write(&pub_encoded).unwrap();
+        },
+        // Load mode
+        1 => {
+            println!("[+] Load Key Pair from File.");
+
+            // Load private key
+            let file_name = "ecc_priv_key_server_sealed".to_string();
+            let mut ret_val = sgx_status_t::SGX_SUCCESS;
+            let mut sealed_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            let sealed_log_size = sealed_log.len() as u32;
+            let result = unsafe {
+                ocall_load_file(
+                    &mut ret_val as *mut sgx_status_t, 
+                    &mut sealed_log,
+                    file_name.as_ptr() as *const u8, 
+                    file_name.len())
+            };
+            match result {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    panic!("[-] ocall_load_file Failed {}", result.as_str());
+                }
+            }
+            match ret_val {
+                sgx_status_t::SGX_SUCCESS => {},
+                _ => {
+                    panic!("[-] ocall_load_file Failed {}", result.as_str());
+                }
+            }
+
+            // Unseal private key
+            let opt = unsafe {
+                SgxSealedData::<[u8]>::from_raw_sealed_data_t(sealed_log.as_ptr() as *mut sgx_sealed_data_t, sealed_log_size)
+            };
+            let sealed_data = match opt {
+                Some(x) => x,
+                None => {
+                    panic!("[-] unwrap sealed data fail");
+                },
+            };
+            let result = sealed_data.unseal_data();
+            let unsealed_data = match result {
+                Ok(x) => x,
+                Err(_ret) => {
+                    panic!("[-] unseal data fail");
+                },
+            };
+            let priv_key_slice = unsealed_data.get_decrypt_txt();
+            // println!("[.] Unsealed Private Key from File: {:?}", priv_key_slice);
+
+
+            // Deserialize private key
+            let p: EccPrivateKey = serde_cbor::from_slice(priv_key_slice).unwrap();
+            // println!("[.] Deserialized Private Key: {:?}", &p);
+            let ecc_priv_key = sgx_ec256_private_t {
+                r: p.r,
+            };
+
+
+
+            // // Load public key
+            // let file_name = "ecc_pub_key_server".to_string();
+            // let mut ret_val = sgx_status_t::SGX_SUCCESS;
+            // let mut log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+            // let result = unsafe {
+            //     ocall_load_file(
+            //         &mut ret_val as *mut sgx_status_t, 
+            //         &mut log,
+            //         file_name.as_ptr() as *const u8,
+            //         file_name.len())
+            // };
+            // match result {
+            //     sgx_status_t::SGX_SUCCESS => {},
+            //     _ => {
+            //         panic!("[-] ocall_load_file Failed {}", result.as_str());
+            //     }
+            // }
+            // match ret_val {
+            //     sgx_status_t::SGX_SUCCESS => {},
+            //     _ => {
+            //         panic!("[-] ocall_load_file Failed {}", result.as_str());
+            //     }
+            // }
+            // let mut pub_key_slice: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
+            // pub_key_slice.copy_from_slice(&log[..SGX_ECP256_KEY_SIZE*2]);
+            // // println!("[.] Public Key from File: {:?}", pub_key_slice);
+
+            // Get public key from client
+            let mut pub_key_slice = Vec::new();
+            match tls.read_to_end(&mut pub_key_slice) {
+                Ok(_) => println!("[+] Get Public Key from Client"),
+                Err(e) => {
+                    println!("Error in read_to_end: {:?}", e);
+                    panic!("");
+                }
+            };
+            let pub_key_slice = pub_key_slice.as_slice();
+
+            // Deserialize public key
+            let mut gx: [u8; SGX_ECP256_KEY_SIZE] = [0; SGX_ECP256_KEY_SIZE];
+            let mut gy: [u8; SGX_ECP256_KEY_SIZE] = [0; SGX_ECP256_KEY_SIZE];
+            gx.copy_from_slice(&pub_key_slice[..SGX_ECP256_KEY_SIZE]);
+            gy.copy_from_slice(&pub_key_slice[SGX_ECP256_KEY_SIZE..]);
+            let p = EccPublicKey {
+                gx,
+                gy,
+            };
+            // println!("[.] Deserialized Public Key: {:?}", &p);
+            let ecc_pub_key = sgx_ec256_public_t {
+                gx: p.gx,
+                gy: p.gy,
+            };
+
+
+
+            // Validate key pair
+            let ecc_handle = SgxEccHandle::new();
+            ecc_handle.open().unwrap();
+            let data = 12;
+            let signature = ecc_handle.ecdsa_sign_msg(&data, &ecc_priv_key).unwrap();
+            let verify_sig= ecc_handle.ecdsa_verify_msg(&data, &ecc_pub_key, &signature).unwrap();
+            if verify_sig {
+                println!("[+] Valid Ecc Key Pair.");
+            } else {
+                println!("[-] Invalid Ecc Key Pair!")
+            }
+        },
+        // Other mode is invalid
+        _ => { panic!("[-] Invalid Mode!") }
+    }
+
+    
 
     sgx_status_t::SGX_SUCCESS
 }
