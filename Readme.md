@@ -21,11 +21,11 @@ Start server
 cd server
 make
 cd bin
-# Generate Ecc key pair and send public key to client (-s can be omitted)
-./app -s
+# Generate Ecc key pair and send public key to client (-g can be omitted)
+./app -g
 # or
 # Receive Ecc public key from client and verify it with the sealed private key
-./app -l
+./app -v
 ```
 
 Start client 
@@ -34,9 +34,9 @@ Start client
 cd client
 make
 cd bin
-# Receive Ecc public key from server (-s can be omitted)
-./app -s
+# Receive Ecc public key from server (-g can be omitted)
+./app -g
 # or
 # Send Ecc public key to server for verification
-./app -l
+./app -v
 ```

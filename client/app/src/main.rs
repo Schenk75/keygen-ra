@@ -185,10 +185,10 @@ fn main() {
     let mut op: u8 = 0;
     while !args.is_empty() {
         match args.remove(0).as_ref() {
-            "--load" | "-l" => op = 1,
-            "--store" | "-s" => op = 0,
+            "--generate" | "-g" => op = 0,
+            "--verify" | "-v" => op = 1,
             _ => {
-                panic!("Only --load(-l) or --store(-s) is accepted [in default store mode is on]");
+                panic!("Only --generate(-g) or --verify(-v) is accepted [in default generate mode is on]");
             }
         }
     }

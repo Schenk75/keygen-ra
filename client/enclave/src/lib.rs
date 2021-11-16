@@ -616,6 +616,56 @@ impl From<sgx_ec256_public_t> for EccPublicKey {
     }
 }
 
+fn store_pubkey(pub_key_slice: &[u8], file_name: &str) {
+    // Store public key
+    let mut pub_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+    pub_log[..SGX_ECP256_KEY_SIZE*2].copy_from_slice(pub_key_slice);
+    let mut retval = sgx_status_t::SGX_SUCCESS;
+    let result = unsafe {
+        ocall_store_file(
+            &mut retval as *mut sgx_status_t,
+            &pub_log,
+            file_name.as_ptr() as *const u8,
+            file_name.len()
+        )
+    };
+    match result {
+        sgx_status_t::SGX_SUCCESS => {},
+        _ => {
+            println!("[-] Store Public Key (ocall_store_file) Failed {}!", result.as_str());
+        }
+    }
+}
+
+fn load_pubkey(file_name: String) -> [u8; SGX_ECP256_KEY_SIZE*2] {
+    // Load public key
+    let mut ret_val = sgx_status_t::SGX_SUCCESS;
+    let mut log: [u8; LOG_SIZE] = [0; LOG_SIZE];
+    let result = unsafe {
+        ocall_load_file(
+            &mut ret_val as *mut sgx_status_t, 
+            &mut log,
+            file_name.as_ptr() as *const u8,
+            file_name.len())
+    };
+    match result {
+        sgx_status_t::SGX_SUCCESS => {},
+        _ => {
+            panic!("[-] ocall_load_file Failed {}", result.as_str());
+        }
+    }
+    match ret_val {
+        sgx_status_t::SGX_SUCCESS => {},
+        _ => {
+            panic!("[-] ocall_load_file Failed {}", result.as_str());
+        }
+    }
+    let mut pub_key_slice: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
+    pub_key_slice.copy_from_slice(&log[..SGX_ECP256_KEY_SIZE*2]);
+    // println!("[.] Public Key from File: {:?}", pub_key_slice);
+    pub_key_slice
+}
+
 #[no_mangle]
 pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t, op: u8) -> sgx_status_t {
     let _ = backtrace::enable_backtrace("enclave.signed.so", PrintFormat::Short);
@@ -665,7 +715,7 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
     let mut tls = rustls::Stream::new(&mut sess, &mut conn);
 
     match op {
-        // Store mode
+        // Generate mode
         0 => {
             // Get server's public key
             let mut pub_key_slice = Vec::new();
@@ -679,55 +729,14 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
                 Err(e) => println!("[-] Error in read_to_end: {:?}", e),
             }
             let pub_key_slice = pub_key_slice.as_slice();
-
-            // Store public key
-            let mut pub_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
-            pub_log[..SGX_ECP256_KEY_SIZE*2].copy_from_slice(pub_key_slice);
             let file_name = "ecc_pub_key_server".to_string();
-            let mut retval = sgx_status_t::SGX_SUCCESS;
-            let result = unsafe {
-                ocall_store_file(
-                    &mut retval as *mut sgx_status_t,
-                    &pub_log,
-                    file_name.as_ptr() as *const u8,
-                    file_name.len()
-                )
-            };
-            match result {
-                sgx_status_t::SGX_SUCCESS => {},
-                _ => {
-                    println!("[-] Store Public Key (ocall_store_file) Failed {}!", result.as_str());
-                }
-            }
+            store_pubkey(pub_key_slice, &file_name)
         },
-        // Load mode
+        // Verify mode
         1 => {
-            // Load public key
+            // // Load public key
             let file_name = "ecc_pub_key_server".to_string();
-            let mut ret_val = sgx_status_t::SGX_SUCCESS;
-            let mut log: [u8; LOG_SIZE] = [0; LOG_SIZE];
-            let result = unsafe {
-                ocall_load_file(
-                    &mut ret_val as *mut sgx_status_t, 
-                    &mut log,
-                    file_name.as_ptr() as *const u8,
-                    file_name.len())
-            };
-            match result {
-                sgx_status_t::SGX_SUCCESS => {},
-                _ => {
-                    panic!("[-] ocall_load_file Failed {}", result.as_str());
-                }
-            }
-            match ret_val {
-                sgx_status_t::SGX_SUCCESS => {},
-                _ => {
-                    panic!("[-] ocall_load_file Failed {}", result.as_str());
-                }
-            }
-            let mut pub_key_slice: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
-            pub_key_slice.copy_from_slice(&log[..SGX_ECP256_KEY_SIZE*2]);
-            // println!("[.] Public Key from File: {:?}", pub_key_slice);
+            let pub_key_slice = load_pubkey(file_name);
 
             // Send public key to server to verify
             tls.write(&pub_key_slice).unwrap();
