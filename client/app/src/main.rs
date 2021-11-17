@@ -187,8 +187,9 @@ fn main() {
         match args.remove(0).as_ref() {
             "--generate" | "-g" => op = 0,
             "--verify" | "-v" => op = 1,
+            "--sign" | "-s" => op = 2,
             _ => {
-                panic!("Only --generate(-g) or --verify(-v) is accepted [in default generate mode is on]");
+                panic!("Only --generate(-g) or --verify(-v) or --sign(-s) is accepted [in default generate mode is on]");
             }
         }
     }

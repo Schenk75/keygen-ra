@@ -26,6 +26,9 @@ cd bin
 # or
 # Receive Ecc public key from client and verify it with the sealed private key
 ./app -v
+# or
+# Sign a message and send the signature to client
+./app -s
 ```
 
 Start client 
@@ -39,4 +42,7 @@ cd bin
 # or
 # Send Ecc public key to server for verification
 ./app -v
+# or
+# Receive signature & message from server and verify sig
+./app -s
 ```
