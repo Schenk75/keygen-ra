@@ -538,6 +538,7 @@ fn store_pubkey(pub_key_slice: &[u8], file_name: &str) {
 }
 
 fn load_pubkey(file_name: &str) -> sgx_ec256_public_t {
+    println!("[+] Load Public Key from File");
     // Load public key
     let mut ret_val = sgx_status_t::SGX_SUCCESS;
     let mut log: [u8; LOG_SIZE] = [0; LOG_SIZE];
@@ -562,14 +563,13 @@ fn load_pubkey(file_name: &str) -> sgx_ec256_public_t {
     }
     let mut pub_key_slice: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
     pub_key_slice.copy_from_slice(&log[..SGX_ECP256_KEY_SIZE*2]);
-    // println!("[.] Public Key from File: {:?}", pub_key_slice);
+    println!("[.] Public Key from File: {:?}", pub_key_slice);
 
     // Deserialize public key
     let mut gx: [u8; SGX_ECP256_KEY_SIZE] = [0; SGX_ECP256_KEY_SIZE];
     let mut gy: [u8; SGX_ECP256_KEY_SIZE] = [0; SGX_ECP256_KEY_SIZE];
     gx.copy_from_slice(&pub_key_slice[..SGX_ECP256_KEY_SIZE]);
     gy.copy_from_slice(&pub_key_slice[SGX_ECP256_KEY_SIZE..]);
-    // println!("[.] Deserialized Public Key: {:?}", &p);
     let ecc_pub_key = sgx_ec256_public_t {
         gx,
         gy,
@@ -578,6 +578,7 @@ fn load_pubkey(file_name: &str) -> sgx_ec256_public_t {
 }
 
 fn verify_sig(buf: &[u8]) -> bool {
+    println!("[+] Verify Signature");
     let sig_slice = &buf[..SIG_SIZE];
     let sig: EccSignature = serde_cbor::from_slice(&sig_slice).unwrap();
     let signature = sgx_ec256_signature_t {
@@ -674,6 +675,7 @@ pub extern "C" fn run_client(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
             let file_name = "ecc_pub_key_server".to_string();
             let pub_key = load_pubkey(&file_name);
             let pub_key: EccPublicKey = pub_key.into();
+            println!("[.] Deserialized Public Key: {:?}", &pub_key);
             let pub_key_slice = serde_cbor::to_vec(&pub_key).unwrap();
             let pub_key_slice = pub_key_slice.as_slice();
 

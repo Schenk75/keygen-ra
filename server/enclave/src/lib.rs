@@ -515,9 +515,8 @@ fn get_ias_api_key() -> String {
     key.trim_end().to_owned()
 }
 
-
 fn gen_ecc_key_pair(file_name: &str) -> [u8; SGX_ECP256_KEY_SIZE*2] {
-    println!("[+] Generate and Store Ecc Key Pair.");
+    println!("[+] Generate and Store Ecc Key Pair");
     // Generate key pair
     let ecc_handle = SgxEccHandle::new();
     ecc_handle.open().unwrap();
@@ -527,14 +526,14 @@ fn gen_ecc_key_pair(file_name: &str) -> [u8; SGX_ECP256_KEY_SIZE*2] {
     // Store key pair (Seal)
     let priv_key: EccPrivateKey = prv_k.into();
     let pub_key: EccPublicKey = pub_k.into();
-    // println!("[.] private key: {:?}\n[.] public key: {:?}", priv_key, pub_key);
+    println!("[.] private key: {:?}\n[.] public key: {:?}", priv_key, pub_key);
     let _ = ecc_handle.close();
 
     // Store public key
     let mut pub_encoded: [u8; SGX_ECP256_KEY_SIZE*2] = [0; SGX_ECP256_KEY_SIZE*2];
     pub_encoded[..SGX_ECP256_KEY_SIZE].copy_from_slice(&pub_key.gx);
     pub_encoded[SGX_ECP256_KEY_SIZE..].copy_from_slice(&pub_key.gy);
-    // println!("[.] pub_encoded: {:?}", pub_encoded);
+    println!("[.] pub_encoded: {:?}", pub_encoded);
     let mut pub_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
     pub_log[..SGX_ECP256_KEY_SIZE*2].copy_from_slice(&pub_encoded);
     let mut retval = sgx_status_t::SGX_SUCCESS;
@@ -556,7 +555,7 @@ fn gen_ecc_key_pair(file_name: &str) -> [u8; SGX_ECP256_KEY_SIZE*2] {
     // We only need to seal private key
     let priv_encoded = serde_cbor::to_vec(&priv_key).unwrap();
     let priv_encoded = priv_encoded.as_slice();
-    // println!("[.] priv_encoded: {:?}", priv_encoded);
+    println!("[.] priv_encoded: {:?}", priv_encoded);
     let aad: [u8; 0] = [0_u8; 0];
     let result = SgxSealedData::<[u8]>::seal_data(&aad, priv_encoded);
     let sealed_priv = match result {
@@ -573,7 +572,7 @@ fn gen_ecc_key_pair(file_name: &str) -> [u8; SGX_ECP256_KEY_SIZE*2] {
     if opt.is_none() {
         println!("[-] Err to_raw_sealed_data_t")
     }
-    // println!("[.] sealed data: {:?}", sealed_priv_log);
+    println!("[.] sealed_priv: {:?}", sealed_priv_log);
     // Store sealed data to file
     let file_name = "ecc_priv_key_server_sealed".to_string();
     let mut retval = sgx_status_t::SGX_SUCCESS;
@@ -596,7 +595,7 @@ fn gen_ecc_key_pair(file_name: &str) -> [u8; SGX_ECP256_KEY_SIZE*2] {
 
 // Verify if a public key matches the private key
 fn verify_pubkey(ecc_pub_key: &sgx_ec256_public_t, priv_file_name: &str) -> bool {
-    println!("[+] Receive and Verify Public Key from Client.");
+    println!("[+] Receive and Verify Public Key from Client");
 
     let ecc_priv_key = load_priv_key(&priv_file_name);
     
@@ -610,6 +609,7 @@ fn verify_pubkey(ecc_pub_key: &sgx_ec256_public_t, priv_file_name: &str) -> bool
 
 // Load and unseal private key
 fn load_priv_key(file_name: &str) -> sgx_ec256_private_t {
+    println!("[+] Load and Unseal Private Key");
     let mut ret_val = sgx_status_t::SGX_SUCCESS;
     let mut sealed_log: [u8; LOG_SIZE] = [0; LOG_SIZE];
     let sealed_log_size = sealed_log.len() as u32;
@@ -653,11 +653,11 @@ fn load_priv_key(file_name: &str) -> sgx_ec256_private_t {
         },
     };
     let priv_key_slice = unsealed_data.get_decrypt_txt();
-    // println!("[.] Unsealed Private Key from File: {:?}", priv_key_slice);
+    println!("[.] Unsealed Private Key from File: {:?}", priv_key_slice);
 
     // Deserialize private key
     let p: EccPrivateKey = serde_cbor::from_slice(priv_key_slice).unwrap();
-    // println!("[.] Deserialized Private Key: {:?}", &p);
+    println!("[.] Deserialized Private Key: {:?}", &p);
     let ecc_priv_key = sgx_ec256_private_t {
         r: p.r,
     };
@@ -754,7 +754,7 @@ pub extern "C" fn run_server(socket_fd : c_int, sign_type: sgx_quote_sign_type_t
         2 => {
             // Send message
             let message = "Test Sign Mode1254adfasdfadsfda234afdsxxxaeee23".as_bytes();
-            // println!("Message size: {}", message.len());
+            println!("Send Message: {:?}", message);
 
             // Load private key
             let file_name = "ecc_priv_key_server_sealed".to_string();
