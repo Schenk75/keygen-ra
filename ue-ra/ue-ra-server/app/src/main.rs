@@ -24,14 +24,14 @@ use sgx_types::*;
 use sgx_urts::SgxEnclave;
 
 use std::os::unix::io::{IntoRawFd, AsRawFd};
+use std::env;
 use std::net::{TcpListener, TcpStream, SocketAddr};
-use std::{str, fs, slice, env};
-use std::io::prelude::*;
+use std::{str, fs, slice};
+use std::io::{Read, Write};
 
 const BUFFER_SIZE: usize = 1024;
 
 static ENCLAVE_FILE: &'static str = "enclave.signed.so";
-static ENCLAVE_TOKEN: &'static str = "enclave.token";
 
 extern {
     fn run_server(eid: sgx_enclave_id_t, retval: *mut sgx_status_t,
@@ -46,7 +46,6 @@ fn ocall_sgx_init_quote(ret_ti: *mut sgx_target_info_t,
     unsafe {sgx_init_quote(ret_ti, ret_gid)}
 }
 
-
 pub fn lookup_ipv4(host: &str, port: u16) -> SocketAddr {
     use std::net::ToSocketAddrs;
 
@@ -59,7 +58,6 @@ pub fn lookup_ipv4(host: &str, port: u16) -> SocketAddr {
 
     unreachable!("Cannot lookup address");
 }
-
 
 #[no_mangle]
 pub extern "C"
@@ -112,7 +110,7 @@ fn ocall_get_quote (p_sigrl            : *const u8,
                       p_qe_report,
                       p_quote as *mut sgx_quote_t,
                       real_quote_len)
-    };
+        };
 
     if ret != sgx_status_t::SGX_SUCCESS {
         println!("sgx_calc_quote_size returned {}", ret);
@@ -178,7 +176,6 @@ fn init_enclave() -> SgxResult<SgxEnclave> {
                        &mut misc_attr)
 }
 
-
 fn main() {
     let mut args: Vec<_> = env::args().collect();
     args.remove(0);
@@ -209,7 +206,6 @@ fn main() {
 
     println!("Running as server...");
     let listener = TcpListener::bind("0.0.0.0:3443").unwrap();
-    //loop{
     match listener.accept() {
         Ok((socket, addr)) => {
             println!("new client from {:?}", addr);
@@ -229,7 +225,6 @@ fn main() {
         }
         Err(e) => println!("couldn't get client: {:?}", e),
     }
-
 
     println!("[+] Done!");
 

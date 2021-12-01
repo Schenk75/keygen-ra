@@ -1,7 +1,8 @@
-# Mutual Remote Attestation code sample
+# Generate Key Pair by Mutual Remote Attestation
 
-This code sample contains an implementation of [Integrating Remote Attestation with Transport Layer Security](https://github.com/cloud-security-research/sgx-ra-tls/blob/master/whitepaper.pdf).
+In this case, both server and client have sgx device, and they verify each other's quote.
 
+**NOTE: If client doesn't have sgx device, use the code in ue-ra.**
 ## Requirements
 
 To use this code sample, one needs to register at [Intel website](https://api.portal.trustedservices.intel.com/EPID-attestation) for dev IAS service access. Once the registration is finished, the following stuff should be ready:

@@ -13,18 +13,16 @@
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
 
-pcl
-test_input
 target
-Cargo.lock
 Cargo.lock
 *_u.*
 *_t.*
 */lib/*.a
 libenclave.a
 */bin/app
-*/bin/key.txt
-*/bin/spid.txt
+*/*/bin/app
 enclave*.so
 enclave.signed.so
-storage/*
+key.txt
+spid.txt
+storage

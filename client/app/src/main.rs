@@ -140,6 +140,7 @@ pub extern "C" fn ocall_store_file (sealed_log: &[u8; BUFFER_SIZE], file_name: *
 
     println!("Save file name: {}", file_name);
 
+    fs::create_dir_all("storage").expect("Cannot create directory");
     let mut file = fs::File::create(format!("./storage/{}", file_name)).expect("create file failed");
     file.write_all(sealed_log).expect("write file failed");
 
