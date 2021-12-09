@@ -21,8 +21,7 @@ SGX_SDK ?= /opt/sgxsdk
 SGX_MODE ?= HW
 SGX_ARCH ?= x64
 
-SGX_SDK_RUST ?= ~/sgx/incubator-teaclave-sgx-sdk
-include $(SGX_SDK_RUST)/buildenv.mk
+include ../../buildenv.mk
 
 ifeq ($(shell getconf LONG_BIT), 32)
 	SGX_ARCH := x86
@@ -60,8 +59,8 @@ SGX_COMMON_CFLAGS += -fstack-protector
 
 CUSTOM_LIBRARY_PATH := ./lib
 CUSTOM_BIN_PATH := ./bin
-CUSTOM_EDL_PATH := $(SGX_SDK_RUST)/edl
-CUSTOM_COMMON_PATH := $(SGX_SDK_RUST)/common
+CUSTOM_EDL_PATH := ../../edl
+CUSTOM_COMMON_PATH := ../../common
 ######## EDL Settings ########
 
 Enclave_EDL_Files := enclave/Enclave_t.c enclave/Enclave_t.h app/Enclave_u.c app/Enclave_u.h
